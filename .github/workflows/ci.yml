@@ -136,5 +136,5 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install pip-audit && pip-audit --progress-spinner off .
         continue-on-error: true   # advisory: report, do not block
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
