@@ -1,7 +1,7 @@
 # Airflow on Kubernetes: KubernetesExecutor = every task runs in its own pod (scale-to-zero when idle).
 # DAGs are baked into the image (pipelines/dags), so a DAG change ships as one immutable artifact.
 defaultAirflowRepository: harbor.demandops.local/demandops/demandops-airflow
-defaultAirflowTag: latest
+defaultAirflowTag: 22aa473
 airflowVersion: "3.2.2"
 executor: KubernetesExecutor
 

@@ -5,7 +5,7 @@ image:
   serving: demandops-serving
   jobs: demandops-jobs
   streamlit: demandops-streamlit
-  tag: latest                                   # CI sets the git sha here
+  tag: 22aa473
   pullPolicy: IfNotPresent
 
 # ---- Model CD: the retrain DAG opens a PR that changes ONLY this block ----
