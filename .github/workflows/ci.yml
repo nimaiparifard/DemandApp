@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12", cache: pip }
       - run: pip install -e ".[dev,serving,statsforecast]"
       - run: ruff check .
@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12", cache: pip }
       - run: pip install -e ".[dev,serving,statsforecast]"
       # unit + integration tests use synthetic data: no Kaggle download, no external services
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12", cache: pip }
       - run: pip install -e ".[dev]"
       - run: python scripts/make_synthetic_m5.py --out data_synth --series 100 --days 500
@@ -69,7 +69,7 @@ jobs:
             tofu -chdir=infra/tofu/envs/$e init -backend=false -input=false
             tofu -chdir=infra/tofu/envs/$e validate
           done
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       - run: |
           pip install ansible-core ansible-lint
@@ -132,7 +132,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       - run: pip install pip-audit && pip-audit --progress-spinner off .
         continue-on-error: true   # advisory: report, do not block
