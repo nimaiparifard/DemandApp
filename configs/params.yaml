@@ -1,0 +1,14 @@
+# Documentation of the tunable defaults (the source of truth is src/demandops/config.py;
+# override any value with environment variables, e.g. DEMANDOPS_N_SERIES=0 for all series).
+features:
+  horizon: 28
+  lags: [28, 35, 42]            # must be >= horizon (enforced, see ADR 0001)
+  rolling_windows: [7, 28, 56]
+train:
+  n_folds: 3                    # rolling-origin folds, each predicts 28 days
+  train_days: 730
+  num_boost_round: 300
+gates:
+  min_wrmsse_improvement: 0.01  # >= 1 % better than champion
+  max_abs_bias: 0.05
+  max_p95_latency_ms: 100

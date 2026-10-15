@@ -1,0 +1,29 @@
+# k3s / k3d registry mirrors (see docs/offline-setup.md).
+#   k3d:  --registry-config infra/mirrors/registries.yaml     (done by infra/tofu/modules/k3d)
+#   k3s:  copy to /etc/rancher/k3s/registries.yaml            (done by the Ansible role)
+#
+# Every image pulled by the cluster goes through YOUR Harbor "proxy cache" projects first, so a
+# blocked or slow Docker Hub is downloaded from ONCE and then served from the local cache.
+# Replace harbor.demandops.local with your Harbor address (plain HTTP is fine inside the cluster).
+mirrors:
+  docker.io:
+    endpoint:
+      - http://harbor.demandops.local/v2/proxy-dockerhub
+      # public mirror as a second choice - check which one is alive today:
+      # - https://docker.arvancloud.ir
+  ghcr.io:
+    endpoint:
+      - http://harbor.demandops.local/v2/proxy-ghcr
+  quay.io:
+    endpoint:
+      - http://harbor.demandops.local/v2/proxy-quay
+  registry.k8s.io:
+    endpoint:
+      - http://harbor.demandops.local/v2/proxy-k8s
+configs:
+  "harbor.demandops.local":
+    tls:
+      insecure_skip_verify: true
+    # auth:               # only if the proxy projects are private
+    #   username: robot$pull
+    #   password: <token>

@@ -1,0 +1,85 @@
+# Defaults are safe for a laptop (k3d). Environment overrides: values-local.yaml / values-vps.yaml.
+
+image:
+  registry: harbor.demandops.local/demandops   # own registry (Harbor); GHCR also works
+  serving: demandops-serving
+  jobs: demandops-jobs
+  streamlit: demandops-streamlit
+  tag: latest                                   # CI sets the git sha here
+  pullPolicy: IfNotPresent
+
+# ---- Model CD: the retrain DAG opens a PR that changes ONLY this block ----
+model:
+  name: demand-forecaster
+  version: "1"
+
+serving:
+  mode: rollout              # rollout = Argo Rollouts canary (10->50->100, auto-rollback)
+                             # kserve  = KServe InferenceService, RawDeployment (no automated canary)
+  replicas: 2
+  port: 8001
+  featureBackend: feast      # feast | parquet
+  firstTargetDay: ""         # optional pin; empty = derived from the feature table
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  hpa:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+  canary:
+    steps: [10, 50, 100]
+    pauseSeconds: 60
+    analysis:
+      prometheusAddress: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
+      maxErrorRate: 0.02     # abort if canary 5xx share > 2%
+      maxP95Seconds: 0.1     # abort if canary p95 > 100 ms
+      interval: 30s
+      failureLimit: 1
+  ingress:
+    enabled: true
+    className: nginx
+    host: forecast.demandops.local
+    tls: false
+    clusterIssuer: ""
+
+streamlit:
+  enabled: true
+  replicas: 1
+  host: app.demandops.local
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+simulator:
+  enabled: true
+  schedule: "*/10 * * * *"   # one new day of sales every 10 minutes
+  demandShift: "1.0"         # != 1.0 injects demand drift (demo of the closed loop)
+
+alertBridge:
+  enabled: true
+  airflowUrl: http://airflow-api-server.demandops.svc:8080
+
+feast:
+  applyJob: true             # `feast apply` hook on every sync
+
+# non-secret environment shared by all pods
+env:
+  MLFLOW_TRACKING_URI: http://mlflow.mlops.svc:5000
+  MLFLOW_S3_ENDPOINT_URL: http://s3.storage.svc:8333
+  S3_ENDPOINT_URL: http://s3.storage.svc:8333
+  LANDING_URI: s3://demandops-landing
+  FEATURES_URI: s3://demandops-features
+  DEMANDOPS_N_SERIES: "0"      # 0 = all 30,490 series (use 100 on a laptop)
+  DEMANDOPS_DATA_DIR: /data
+  SIMULATOR_START_DAY: "1913"   # last "history" day of the replay
+
+# Secret created out-of-band (SealedSecret). Keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, DATABASE_URL
+existingSecret: demandops-secrets
+
+dataVolume:
+  # M5 CSVs needed by the simulator/feature jobs; filled once (see docs/runbook.md)
+  claimName: demandops-m5-data
+  size: 3Gi
+  create: true

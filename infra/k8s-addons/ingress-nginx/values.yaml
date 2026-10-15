@@ -1,0 +1,10 @@
+controller:
+  ingressClassResource: { default: true }
+  # k3s/k3d have no cloud load balancer: bind host ports on the node
+  hostPort: { enabled: true }
+  service: { type: ClusterIP }
+  admissionWebhooks: { enabled: false }
+  metrics:
+    enabled: true
+    serviceMonitor: { enabled: true, additionalLabels: { release: kube-prometheus-stack } }
+  resources: { requests: { cpu: 50m, memory: 128Mi } }

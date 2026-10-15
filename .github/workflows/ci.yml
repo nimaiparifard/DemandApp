@@ -1,0 +1,140 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -e ".[dev,serving,statsforecast]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -e ".[dev,serving,statsforecast]"
+      # unit + integration tests use synthetic data: no Kaggle download, no external services
+      - run: pytest --cov --cov-report=xml --cov-fail-under=80
+      - uses: actions/upload-artifact@v4
+        with: { name: coverage, path: coverage.xml }
+
+  data-quality:
+    # the same validation gate DAG 1 runs, on a 100-series synthetic sample
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -e ".[dev]"
+      - run: python scripts/make_synthetic_m5.py --out data_synth --series 100 --days 500
+      - run: |
+          python - <<'PY'
+          from pathlib import Path
+          from demandops.data.loader import load_panel
+          from demandops.data.validation import assert_valid
+          assert_valid(load_panel(Path("data_synth"), "sales_train_evaluation.csv", None))
+          print("data quality gate passed")
+          PY
+
+  infra-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with: { version: v3.17.0 }  # Argo CD bundles Helm 3
+      - run: helm lint infra/helm/demandops
+      - run: |
+          helm template t infra/helm/demandops > /dev/null
+          helm template t infra/helm/demandops -f infra/helm/demandops/values-local.yaml > /dev/null
+          helm template t infra/helm/demandops -f infra/helm/demandops/values-vps.yaml > /dev/null
+          helm template t infra/helm/demandops --set serving.mode=kserve > /dev/null
+      - uses: opentofu/setup-opentofu@v1
+      - run: tofu -chdir=infra/tofu fmt -recursive -check
+      - run: |
+          for e in local vps; do
+            tofu -chdir=infra/tofu/envs/$e init -backend=false -input=false
+            tofu -chdir=infra/tofu/envs/$e validate
+          done
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: |
+          pip install ansible-core ansible-lint
+          cd infra/ansible && ansible-galaxy collection install -r requirements.yml
+          printf '[k3s_server]\nci ansible_host=127.0.0.1\n' > /tmp/inv.ini
+          ansible-playbook -i /tmp/inv.ini playbook.yml --syntax-check
+          ansible-lint playbook.yml
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    strategy:
+      matrix:
+        include:
+          - { name: serving, file: infra/docker/Dockerfile, target: serving }
+          - { name: jobs, file: infra/docker/Dockerfile, target: jobs }
+          - { name: streamlit, file: infra/docker/Dockerfile.streamlit, target: "" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          push: false
+          load: true
+          tags: demandops-${{ matrix.name }}:ci
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: demandops-${{ matrix.name }}:ci
+          severity: CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+  pipeline-e2e:
+    # whole platform pipeline in containers on synthetic data: simulate -> train -> gates -> features -> batch -> API
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/make_synthetic_m5.py --out data --series 100 --days 500
+      - run: make demo N=100
+        env: { SIMULATOR_START_DAY: "490" }
+      - name: Smoke test the API
+        run: |
+          for i in $(seq 1 30); do curl -sf localhost:8001/health && break; sleep 4; done
+          curl -sf -X POST localhost:8001/v2/models/demand-forecaster/infer \
+            -H 'content-type: application/json' \
+            -d '{"item_id":"FOODS_1_001","store_id":"CA_1","horizon":28}' | python3 -c "import sys,json; d=json.load(sys.stdin); assert len(d['forecasts'])==28, d"
+      - if: always()
+        run: docker compose -f infra/docker-compose.yml logs --tail=200
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pip-audit && pip-audit --progress-spinner off .
+        continue-on-error: true   # advisory: report, do not block
+      - uses: gitleaks/gitleaks-action@v2
+        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }

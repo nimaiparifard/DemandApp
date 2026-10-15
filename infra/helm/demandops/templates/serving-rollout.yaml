@@ -1,0 +1,144 @@
+{{- if eq .Values.serving.mode "rollout" }}
+# Argo Rollouts canary: 10% -> 50% -> 100% with Prometheus analysis; a failed analysis aborts
+# the rollout and shifts all traffic back to the stable ReplicaSet automatically.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: demand-forecaster
+  labels: {{- include "demandops.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.serving.replicas }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: demand-forecaster
+  template:
+    metadata:
+      labels:
+        app: demand-forecaster
+        model-version: {{ .Values.model.version | quote }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.serving.port | quote }}
+        prometheus.io/path: /metrics
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: serving
+          image: {{ include "demandops.image" (list . .Values.image.serving) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: {{ .Values.serving.port }} }
+          env: {{- include "demandops.env" . | nindent 12 }}
+            {{- include "demandops.serving.env" . | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources: {{- toYaml .Values.serving.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: data, mountPath: /data, readOnly: true }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: {{ .Values.dataVolume.claimName }} }
+  strategy:
+    canary:
+      stableService: demand-forecaster-stable
+      canaryService: demand-forecaster-canary
+      trafficRouting:
+        nginx:
+          stableIngress: demand-forecaster
+      analysis:
+        startingStep: 1
+        templates:
+          - templateName: demand-forecaster-health
+        args:
+          - name: model-version
+            value: {{ .Values.model.version | quote }}
+      steps:
+{{- range $i, $w := .Values.serving.canary.steps }}
+        - setWeight: {{ $w }}
+{{- if lt (int $w) 100 }}
+        - pause: { duration: {{ $.Values.serving.canary.pauseSeconds }}s }
+{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demand-forecaster-stable
+  labels: {{- include "demandops.labels" . | nindent 4 }}
+spec:
+  selector: { app: demand-forecaster }
+  ports: [{ name: http, port: {{ .Values.serving.port }}, targetPort: http }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demand-forecaster-canary
+  labels: {{- include "demandops.labels" . | nindent 4 }}
+spec:
+  selector: { app: demand-forecaster }
+  ports: [{ name: http, port: {{ .Values.serving.port }}, targetPort: http }]
+---
+{{- if .Values.serving.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: demand-forecaster
+  labels: {{- include "demandops.labels" . | nindent 4 }}
+  {{- if and .Values.serving.ingress.tls .Values.serving.ingress.clusterIssuer }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.serving.ingress.clusterIssuer }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.serving.ingress.className }}
+  {{- if .Values.serving.ingress.tls }}
+  tls:
+    - hosts: [{{ .Values.serving.ingress.host }}]
+      secretName: demand-forecaster-tls
+  {{- end }}
+  rules:
+    - host: {{ .Values.serving.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: demand-forecaster-stable
+                port: { number: {{ .Values.serving.port }} }
+{{- end }}
+---
+{{- if .Values.serving.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: demand-forecaster
+  labels: {{- include "demandops.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+    name: demand-forecaster
+  minReplicas: {{ .Values.serving.hpa.minReplicas }}
+  maxReplicas: {{ .Values.serving.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.serving.hpa.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}

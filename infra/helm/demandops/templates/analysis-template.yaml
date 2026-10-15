@@ -1,0 +1,32 @@
+{{- if eq .Values.serving.mode "rollout" }}
+# Automatic rollback: queries use the `model_version` label emitted by the serving pods,
+# so they measure ONLY the canary version, not the stable one.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: demand-forecaster-health
+  labels: {{- include "demandops.labels" . | nindent 4 }}
+spec:
+  args:
+    - name: model-version
+  metrics:
+    - name: error-rate
+      interval: {{ .Values.serving.canary.analysis.interval }}
+      failureLimit: {{ .Values.serving.canary.analysis.failureLimit }}
+      failureCondition: result[0] > {{ .Values.serving.canary.analysis.maxErrorRate }}
+      provider:
+        prometheus:
+          address: {{ .Values.serving.canary.analysis.prometheusAddress }}
+          query: |
+            (sum(rate(demand_requests_total{model_version="{{`{{args.model-version}}`}}",status=~"5.."}[2m])) or vector(0))
+            / clamp_min(sum(rate(demand_requests_total{model_version="{{`{{args.model-version}}`}}"}[2m])), 1)
+    - name: p95-latency
+      interval: {{ .Values.serving.canary.analysis.interval }}
+      failureLimit: {{ .Values.serving.canary.analysis.failureLimit }}
+      failureCondition: result[0] > {{ .Values.serving.canary.analysis.maxP95Seconds }}
+      provider:
+        prometheus:
+          address: {{ .Values.serving.canary.analysis.prometheusAddress }}
+          query: |
+            histogram_quantile(0.95, sum by (le) (rate(demand_request_seconds_bucket{model_version="{{`{{args.model-version}}`}}",route="/v2/models/demand-forecaster/infer"}[2m]))) or vector(0)
+{{- end }}

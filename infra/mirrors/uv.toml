@@ -1,0 +1,7 @@
+# uv equivalent of pip.conf: ~/.config/uv/uv.toml
+[[index]]
+url = "https://mirror-pypi.runflare.com/simple"
+default = true
+
+[[index]]
+url = "https://pypi.org/simple"

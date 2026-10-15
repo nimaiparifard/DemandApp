@@ -1,0 +1,23 @@
+# Reproducible pipeline: `dvc repro`. Raw M5 files are tracked with `dvc add` (see `make data`),
+# so the data version (md5) is known and logged to MLflow with every run (training/tracking.py: dvc_hash).
+stages:
+  validate:
+    cmd: python -c "from pathlib import Path; from demandops.config import get_settings; from demandops.data.loader import load_panel; from demandops.data.validation import assert_valid; s=get_settings(); assert_valid(load_panel(s.demandops_data_dir, s.sales_file, s.demandops_n_series))"
+    deps:
+      - data/calendar.csv
+      - data/sales_train_evaluation.csv
+      - data/sell_prices.csv
+      - src/demandops/data
+
+  evaluate:
+    cmd: demandops evaluate --out docs/results_generated.md
+    deps:
+      - data/calendar.csv
+      - data/sales_train_evaluation.csv
+      - data/sell_prices.csv
+      - src/demandops
+    params:
+      - configs/params.yaml:
+    outs:
+      - docs/results_generated.md:
+          cache: false

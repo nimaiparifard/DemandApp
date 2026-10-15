@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demandops-grafana-dashboard
+  labels:
+    {{- include "demandops.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  demandops.json: |-
+{{ .Files.Get "dashboards/demandops.json" | indent 4 }}

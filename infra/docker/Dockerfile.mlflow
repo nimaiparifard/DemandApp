@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1
+# Small MLflow server image (compose only; the cluster uses the community Helm chart).
+ARG PYTHON_IMAGE=python:3.12-slim
+FROM ${PYTHON_IMAGE}
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG MLFLOW_VERSION=3.15.1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_INDEX_URL=${PIP_INDEX_URL}
+RUN pip install "mlflow==${MLFLOW_VERSION}" psycopg2-binary boto3
+RUN useradd --uid 10001 --create-home app
+USER 10001
+EXPOSE 5000
+CMD ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000", \
+     "--backend-store-uri", "postgresql+psycopg2://demandops:demandops@postgres:5432/mlflow", \
+     "--artifacts-destination", "s3://mlflow-artifacts", "--serve-artifacts", \
+     "--allowed-hosts", "*", "--disable-security-middleware"]

@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+# Airflow with DemandOps baked in: code, DAGs, Feast repo. One immutable artifact per release.
+ARG AIRFLOW_IMAGE=apache/airflow:3.2.2
+FROM ${AIRFLOW_IMAGE}
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ENV PIP_INDEX_URL=${PIP_INDEX_URL} PIP_NO_CACHE_DIR=1
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+USER airflow
+
+WORKDIR /opt/airflow
+COPY --chown=airflow pyproject.toml README.md ./
+COPY --chown=airflow src ./src
+# airflow's own constraint set is NOT applied to demandops deps; pin conflicts show up at build time
+RUN pip install ".[statsforecast,postgres,s3,feast,monitoring]"
+COPY --chown=airflow pipelines ./pipelines
+COPY --chown=airflow pipelines/dags ./dags
+COPY --chown=airflow src/demandops/feature_repo /opt/airflow/feature_repo
+ENV PYTHONPATH=/opt/airflow

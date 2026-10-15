@@ -1,0 +1,59 @@
+- name: Install base packages
+  ansible.builtin.apt:
+    name: [ufw, fail2ban, unattended-upgrades, curl, ca-certificates, open-iscsi, nfs-common]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: SSH - key only, no root login
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/99-hardening.conf
+    mode: "0644"
+    content: |
+      PasswordAuthentication no
+      PermitRootLogin no
+      MaxAuthTries 3
+  notify: Restart sshd
+
+- name: Firewall - default deny incoming
+  community.general.ufw:
+    default: deny
+    direction: incoming
+
+- name: Firewall - allow web traffic
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: ["80", "443"]
+
+- name: Firewall - allow SSH and the Kubernetes API from admin networks only
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.1 }}"
+    proto: tcp
+    from_ip: "{{ item.0 }}"
+  loop: "{{ admin_cidrs | product(['22', '6443']) | list }}"
+
+- name: Firewall - open SSH to all when no admin network is configured
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+  when: admin_cidrs | length == 0
+
+- name: Firewall - allow pod/service networks (k3s)
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ item }}"
+  loop: ["10.42.0.0/16", "10.43.0.0/16"]
+
+- name: Enable firewall
+  community.general.ufw:
+    state: enabled
+
+- name: Enable fail2ban
+  ansible.builtin.service:
+    name: fail2ban
+    state: started
+    enabled: true

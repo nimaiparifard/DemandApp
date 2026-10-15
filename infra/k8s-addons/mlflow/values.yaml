@@ -1,0 +1,24 @@
+# MLflow tracking server + model registry. Backend store: CloudNativePG; artifacts: S3 store (SeaweedFS).
+backendStore:
+  databaseMigration: true
+  postgres:
+    enabled: true
+    host: demandops-pg-rw.storage.svc
+    port: 5432
+    database: mlflow
+    user: demandops
+    password: demandops-dev-password     # DEMO ONLY - must equal demandops-pg-credentials; seal for real use
+    driver: psycopg2
+artifactRoot:
+  proxiedArtifactStorage: true           # clients upload through the server: no S3 credentials on laptops/pods
+  s3:
+    enabled: true
+    bucket: mlflow-artifacts
+    existingSecret:
+      name: mlflow-s3                    # keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+extraFlags: [serveArtifacts]
+extraEnvVars:
+  MLFLOW_S3_ENDPOINT_URL: http://s3.storage.svc:8333
+  AWS_DEFAULT_REGION: us-east-1
+resources:
+  requests: { cpu: 100m, memory: 512Mi }

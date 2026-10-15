@@ -1,0 +1,47 @@
+# kube-prometheus-stack: Prometheus, Alertmanager, Grafana + node/kube metrics.
+prometheus:
+  prometheusSpec:
+    retention: 15d
+    # pick up ServiceMonitors / PrometheusRules from every namespace, not only this release
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    resources: { requests: { cpu: 200m, memory: 1Gi } }
+    additionalScrapeConfigs:
+      - job_name: demandops-serving
+        kubernetes_sd_configs: [{ role: pod, namespaces: { names: [demandops] } }]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            separator: ";"
+            regex: (.+);(.+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+alertmanager:
+  config:
+    route:
+      receiver: default
+      group_by: [alertname]
+      routes:
+        - matchers: ['action="retrain"']
+          receiver: retrain-bridge
+          repeat_interval: 24h        # at most one retrain trigger per day per alert
+    receivers:
+      - name: default
+      - name: retrain-bridge
+        webhook_configs:
+          - url: http://alert-bridge.demandops.svc:8080/alert
+            send_resolved: false
+grafana:
+  adminPassword: admin               # DEMO ONLY
+  sidecar:
+    dashboards: { enabled: true, label: grafana_dashboard, searchNamespace: ALL }
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts: [grafana.demandops.local]

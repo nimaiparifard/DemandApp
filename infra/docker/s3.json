@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "demandops",
+      "credentials": [{ "accessKey": "demandops", "secretKey": "demandops-secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

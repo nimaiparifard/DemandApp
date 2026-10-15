@@ -1,0 +1,35 @@
+# Host-level backups of what Kubernetes cannot rebuild from git: the k3s datastore and the
+# Argo CD / sealed-secrets keys. Postgres and object-store data are backed up inside the cluster
+# (CloudNativePG ScheduledBackup -> S3 bucket pg-backups); copy that bucket off-host with
+# `mc mirror` to a second disk/VPS (see docs/runbook.md - restore tested there).
+- name: Backup directory
+  ansible.builtin.file:
+    path: "{{ backup_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Nightly k3s state snapshot
+  ansible.builtin.cron:
+    name: DemandOps k3s snapshot
+    minute: "30"
+    hour: "1"
+    job: "/usr/local/bin/k3s etcd-snapshot save --name nightly --dir {{ backup_dir }} >/dev/null 2>&1"
+    user: root
+
+- name: Snapshot retention
+  ansible.builtin.cron:
+    name: DemandOps backup retention
+    minute: "45"
+    hour: "1"
+    job: "find {{ backup_dir }} -type f -mtime +{{ backup_retention_days }} -delete"
+    user: root
+
+- name: Export the sealed-secrets key pair (needed to restore on a NEW cluster)
+  ansible.builtin.cron:
+    name: DemandOps sealed-secrets key export
+    minute: "0"
+    hour: "2"
+    job: >-
+      k3s kubectl -n kube-system get secret -l sealedsecrets.bitnami.com/sealed-secrets-key
+      -o yaml > {{ backup_dir }}/sealed-secrets-keys.yaml 2>/dev/null && chmod 600 {{ backup_dir }}/sealed-secrets-keys.yaml
+    user: root

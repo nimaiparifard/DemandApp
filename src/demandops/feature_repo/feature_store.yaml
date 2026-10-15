@@ -1,0 +1,11 @@
+project: demandops
+provider: local
+registry:
+  registry_type: sql
+  path: postgresql+psycopg2://demandops:${POSTGRES_PASSWORD}@demandops-pg-rw.demandops.svc:5432/feast
+online_store:
+  type: redis
+  connection_string: "demandops-redis-master.demandops.svc:6379"
+offline_store:
+  type: file
+entity_key_serialization_version: 3

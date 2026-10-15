@@ -1,0 +1,385 @@
+=====================================================================
+ PROJECT 11 – DemandOps
+ Retail Demand Forecasting Platform (MLOps-first Project)
+ Domain: E-commerce / Retail
+=====================================================================
+Built on: 00_ai-product-template for code style, tests and Makefile.
+DIFFERENCE from the other projects: here the MODEL IS SIMPLE ON PURPOSE.
+The star of this project is the PLATFORM: Kubernetes, OpenTofu, Airflow,
+Feast, MLflow, Argo CD, KServe, monitoring and automatic retraining.
+No Django / React here – a small Streamlit page is enough.
+
+IMPORTANT CONSTRAINT – BUILT FROM IRAN (sanctions)
+  AWS / GCP / Azure / HashiCorp downloads / GitLab.com / Docker Hub may
+  be blocked. So the whole platform is CLOUD-AGNOSTIC and SELF-HOSTED:
+  every managed cloud service is replaced by an open-source one that
+  runs on ANY Kubernetes (laptop, Iranian VPS, or AWS later abroad).
+  See section 12 for the full replacement table and setup tips.
+  In interviews this is a STRENGTH: "no vendor lock-in, runs anywhere".
+
+ONE-LINE PITCH
+  A platform that forecasts daily sales for 30,490 Walmart products,
+  runs on any Kubernetes (local kind/k3d + a k3s VPS provisioned with
+  OpenTofu), retrains itself with Airflow when drift is detected, and
+  deploys new models with GitOps canary releases – fully automated
+  from data to production, with zero dependence on a public cloud.
+
+WHAT IT PROVES TO A RECRUITER (MLOps job ads, item by item)
+  - Kubernetes + Helm + GitOps (Argo CD, Argo Rollouts canary)
+  - Infrastructure as Code: OpenTofu (Terraform-compatible) + Ansible,
+    plus cloud-agnostic design (S3 API via MinIO, Postgres operator)
+  - Pipeline orchestration: Airflow DAGs running pods on Kubernetes
+  - Feature store: Feast (offline MinIO/parquet + online Redis)
+  - Model lifecycle: MLflow tracking + registry, champion/challenger
+  - Serving: KServe (online) + batch inference job (offline)
+  - Monitoring: Prometheus, Grafana, Evidently, alerting -> auto-retrain
+  - Data quality: Great Expectations / pandera gates in the pipeline
+  - Testing + load testing (pytest, k6), CI with GitHub Actions
+  - Cost awareness: runs locally on k3d for free, one cheap VPS for demo
+  - Self-hosting skills: own container registry (Harbor), object storage
+    (MinIO), Postgres operator (CloudNativePG), package mirrors
+
+
+---------------------------------------------------------------------
+1. BUSINESS PROBLEM
+---------------------------------------------------------------------
+A retailer must decide every day how many units of each product to
+send to each store. Too few -> stockout (lost sales, angry customers).
+Too many -> overstock (money stuck in inventory, waste).
+DemandOps forecasts the next 28 days of sales for every item x store,
+every night, and feeds a simple reorder policy.
+
+Key business metrics you will report:
+  - Forecast accuracy: WRMSSE (official M5 metric), MAE, bias
+  - Simulated stockout rate and overstock cost vs. a naive policy
+  - Platform metrics: pipeline success rate, time from new data to new
+    model in production, serving latency p95, cost per month
+
+
+---------------------------------------------------------------------
+2. DATASETS
+---------------------------------------------------------------------
+PRIMARY – M5 Forecasting Accuracy (Kaggle competition, Walmart data)
+  URL      kaggle.com/competitions/m5-forecasting-accuracy
+  Size     30,490 item x store series, 1,941 days (2011-2016),
+           3 states, 10 stores, 3 categories, ~3,000 products
+  Files
+    sales_train_evaluation.csv  daily unit sales (wide: d_1 ... d_1941)
+    calendar.csv                dates, events, holidays, SNAP days
+    sell_prices.csv             weekly price per item x store
+  Download: `kaggle competitions download -c m5-forecasting-accuracy`
+  If Kaggle is blocked: use a VPN/proxy ONCE, or the copy linked from
+  the official M5 repo (github.com/Mcompetitions/M5-methods). Then
+  `dvc push` it to MinIO – after that the pipeline NEVER needs the
+  internet for data again.
+
+WHY THIS DATASET IS PERFECT FOR MLOPS
+  It is a long time series, so we can REPLAY it as if it were live:
+  a "data simulator" releases one new day of sales into the landing
+  bucket every N minutes. This gives us real daily pipelines, real
+  drift (holidays, price changes, trend), and real retraining – without
+  needing a company.
+
+DATA VERSIONING
+  data/raw/m5/*.csv              -> dvc add (remote: MinIO / S3)
+  landing/ (replayed daily files) -> MinIO bucket demandops-landing
+  features/*.parquet             -> Feast offline store (partitioned by date)
+
+
+---------------------------------------------------------------------
+3. ARCHITECTURE (the drawing)
+---------------------------------------------------------------------
+
+  +-------------------+     every N min      +----------------------+
+  |  Data Simulator   | -------------------> |  MinIO (S3 API)      |
+  | (replays M5 days) |   new day of sales   |  sales_YYYY-MM-DD    |
+  +-------------------+                      +----------+-----------+
+                                                        |
+                                                        v
+  +-----------------------------------------------------------------+
+  |                 AIRFLOW (on Kubernetes)                          |
+  |                                                                  |
+  |  DAG 1: daily_ingest                                             |
+  |    validate (Great Expectations) -> build features -> Feast      |
+  |    materialize (offline -> online Redis)                         |
+  |                                                                  |
+  |  DAG 2: daily_batch_forecast                                     |
+  |    load Production model from MLflow -> predict 28 days for all  |
+  |    30,490 series -> write to Postgres -> reorder simulation      |
+  |                                                                  |
+  |  DAG 3: retrain (weekly OR triggered by drift alert)             |
+  |    train challenger -> backtest -> compare with champion ->      |
+  |    gates (accuracy, bias, latency) -> register in MLflow ->      |
+  |    open Pull Request that bumps model version in GitOps repo     |
+  |                                                                  |
+  |  DAG 4: monitoring                                               |
+  |    Evidently: data drift + forecast error drift -> Prometheus    |
+  +------------+----------------------------+-----------------------+
+               |                            |
+               v                            v
+  +---------------------+        +---------------------------+
+  |  MLflow             |        |  Feast                    |
+  |  tracking+registry  |        |  offline: MinIO parquet   |
+  |  backend: Postgres  |        |  online:  Redis           |
+  |  artifacts: MinIO   |        +-------------+-------------+
+  +----------+----------+                      |
+             |                                 |
+             v                                 v
+  +-----------------------------------------------------------------+
+  |  GITOPS:  GitHub repo (helm values) --> Argo CD --> cluster      |
+  |           images from Harbor (self-hosted registry)              |
+  |                                                                  |
+  |   KServe InferenceService  "demand-forecaster" (RawDeployment    |
+  |   mode = no Knative/Istio, light enough for a small VPS)         |
+  |     champion  90% traffic  <-- Argo Rollouts canary -->          |
+  |     challenger 10% traffic     auto-rollback if error/latency up |
+  |   reads online features from Feast/Redis                         |
+  +---------------------------+-------------------------------------+
+                              |
+                              v
+  +-----------------+   +-----------------+   +---------------------+
+  | Streamlit page  |   | Prometheus      |-->| Grafana dashboards  |
+  | forecasts,      |   | (latency, RPS,  |   | + Alertmanager ->   |
+  | what-if price   |   |  drift, errors) |   |   trigger DAG 3     |
+  +-----------------+   +-----------------+   +---------------------+
+
+  INFRA LAYER (OpenTofu + Ansible, NO public cloud needed):
+    local:  k3d cluster on your laptop (free, for daily work)
+    server: 1-2 VPS from an Iranian provider (ArvanCloud, ParsPack,
+            Hamravesh ...) -> OpenTofu creates the VMs (Arvan has a
+            provider; otherwise create by hand and keep only Ansible)
+            -> Ansible installs k3s -> Argo CD installs everything else
+    inside the cluster (same on laptop and server):
+            MinIO (S3) | CloudNativePG (Postgres) | Redis | Harbor
+            (registry) | cert-manager + ingress-nginx | sealed-secrets
+    abroad later: swap only the infra module (EKS + S3 + RDS); the
+            Helm charts and pipelines do not change.
+
+
+---------------------------------------------------------------------
+4. ML PART (keep it simple and correct)
+---------------------------------------------------------------------
+Step 1 – Data validation (Great Expectations suite or pandera)
+  - no negative sales, prices > 0, every series has today's row,
+    calendar has no gaps. Pipeline STOPS and alerts if a check fails.
+
+Step 2 – Features (pure functions, unit-tested, registered in Feast)
+  - lags: sales lag 7, 14, 28
+  - rolling: mean/std over 7, 28, 56 days (shifted by 28 to avoid leak)
+  - price: current price, price change vs. last week, price vs. item mean
+  - calendar: day of week, month, event type, SNAP flag per state
+  - ids: item, dept, category, store, state (categorical)
+
+Step 3 – Models (compare in MLflow, all with the same backtest)
+  - Baseline 1: seasonal naive (same day last week)
+  - Baseline 2: statsforecast AutoETS on aggregated levels
+  - Main: ONE global LightGBM (tweedie objective) over all series
+  - Optional: N-HiTS / TFT via neuralforecast (only if time allows)
+
+Step 4 – Backtesting (the most important ML idea here)
+  - rolling-origin: 3 folds, each predicts 28 days ahead
+  - metrics per fold: WRMSSE, MAE, bias -> logged to MLflow
+  - NEVER random split: time series must be split by time
+
+Step 5 – Promotion gates (code in pipelines/gates.py)
+  challenger is promoted ONLY if:
+    WRMSSE better than champion by >= 1%   AND
+    |bias| < 5%                            AND
+    p95 latency in staging < 100 ms        AND
+    no data-quality failures in the training window
+  -> otherwise DAG ends with "kept champion" (logged + Slack/email)
+
+
+---------------------------------------------------------------------
+5. CODE STRUCTURE
+---------------------------------------------------------------------
+demandops/
+  infra/
+    tofu/                          # OpenTofu (Terraform-compatible HCL)
+      modules/ (vps, network, dns)  envs/local/  envs/vps/
+      (optional later: modules/aws-eks – tested with LocalStack)
+    ansible/  (install k3s, harden server, firewall, backups)
+    mirrors/  (registries.yaml for k3s/k3d, pip.conf – see section 12)
+    helm/
+      demandops/ (chart: api, simulator, streamlit)
+      values-local.yaml  values-vps.yaml
+    argocd/   (Application manifests – app-of-apps)
+    k8s-addons/ (minio, cloudnative-pg, redis, harbor, airflow, mlflow,
+                 feast, kserve, argo-rollouts, kube-prometheus-stack)
+  src/demandops/
+    data/        schemas.py, validation.py, simulator.py
+    features/    lags.py, rolling.py, price.py, calendar.py
+    feature_repo/  feast definitions (entities, feature views)
+    models/      base.py (Forecaster interface), naive.py, lgbm.py
+    training/    backtest.py, train.py, metrics.py (WRMSSE)
+    serving/     kserve_model.py (custom predictor)
+    batch/       predict_all.py, reorder_sim.py
+    monitoring/  drift.py (Evidently), exporters.py (Prometheus)
+  pipelines/
+    dags/        daily_ingest.py, daily_batch_forecast.py,
+                 retrain.py, monitoring.py
+    gates.py
+  apps/streamlit/   app.py (forecast viewer, what-if price)
+  tests/  unit/ integration/ load/ (k6 scripts)
+  .github/workflows/  ci.yml, build-images.yml, tofu-plan.yml
+  Makefile  dvc.yaml  pyproject.toml  README.md  docs/
+
+
+---------------------------------------------------------------------
+6. API (KServe, V2 inference protocol + small FastAPI wrapper)
+---------------------------------------------------------------------
+  POST /v2/models/demand-forecaster/infer
+       {item_id, store_id, horizon<=28, price_override?}
+       -> daily forecast + prediction interval
+  GET  /forecasts/{store_id}?date=     (from batch table in Postgres)
+  GET  /health  /metrics
+
+
+---------------------------------------------------------------------
+7. MLOPS / CI-CD SPECIFICS (the heart of the project)
+---------------------------------------------------------------------
+  CI (every PR):    ruff, mypy, pytest (unit + small integration on a
+                    100-series sample), GE suite on sample data,
+                    docker build, helm lint, tofu fmt/validate/plan
+  CD (merge main):  build + push images to Harbor (or GHCR) (tag = git sha)
+                    (if GitHub-hosted runners can't reach your server:
+                    self-hosted runner inside the cluster via
+                    actions-runner-controller, or Gitea + Gitea Actions)
+                    -> update helm values in GitOps repo -> Argo CD sync
+  Model CD:         retrain DAG opens a PR that changes ONLY the model
+                    version in values.yaml -> review -> merge -> Argo
+                    Rollouts canary 10% -> 50% -> 100% with automatic
+                    rollback on Prometheus analysis (error rate, p95)
+  Closed loop:      Evidently drift metric > threshold -> Alertmanager
+                    webhook -> Airflow REST API triggers retrain DAG
+  Secrets:          External Secrets / sealed-secrets, never in git
+  Alerts:           email (SMTP) or a webhook to a messenger bot –
+                    no Slack/PagerDuty needed
+  Backups:          CloudNativePG backups + MLflow artifacts -> MinIO
+                    bucket on a 2nd disk/VPS (restore tested once)
+  Cost:             k3d locally for free; 1 VPS for the demo;
+                    write the real monthly cost in README
+
+
+---------------------------------------------------------------------
+8. TESTING
+---------------------------------------------------------------------
+  unit:        every feature function (no leakage test: feature at day
+               t uses only data < t), WRMSSE vs. known example, gates
+  integration: full DAG on 100 series inside k3d  (GitHub Actions)
+  data:        Great Expectations suite in CI and in DAG 1
+  load:        k6 -> report RPS and p95 at 1 / 3 / 5 pods (HPA)
+  chaos-lite:  kill a model pod during load test -> show no failed calls
+
+
+---------------------------------------------------------------------
+9. RESULTS TABLE (fill with your REAL numbers only)
+---------------------------------------------------------------------
+  Model               | WRMSSE | MAE | Bias | Train time
+  Seasonal naive      |        |     |      |
+  AutoETS             |        |     |      |
+  LightGBM (global)   |        |     |      |
+  (For reference: M5 winner ~0.52 WRMSSE; a solid single LightGBM is
+   roughly 0.55-0.65 – you do NOT need to win, the platform is the point.)
+
+  Platform            | Value
+  Serving p95 / RPS   |   ms  /   req/s at   pods
+  Data -> prod model  |   minutes (fully automatic)
+  Canary rollback     | tested? yes/no, time to rollback   s
+  VPS demo cost       |     / month (size: __ vCPU, __ GB RAM)
+
+
+---------------------------------------------------------------------
+10. MILESTONES (~5-6 weeks, learning included)
+---------------------------------------------------------------------
+  Week 0: (1-2 days) set up mirrors from section 12 FIRST – pulling
+          images is the #1 time-waster when working from Iran
+  Week 1: data + DVC, validation, features, naive + LightGBM, backtest,
+          MLflow tracking (everything still in Docker Compose)
+  Week 2: k3d cluster, Helm chart, MinIO + CloudNativePG + MLflow on
+          k8s, KServe serving the model             <- learn Kubernetes
+  Week 3: Airflow on k8s, 4 DAGs, data simulator, Feast offline+online
+  Week 4: Argo CD + Argo Rollouts canary, Prometheus/Grafana,
+          Evidently drift -> auto-retrain loop closed
+  Week 5: OpenTofu + Ansible -> k3s on a VPS, Harbor, TLS, backups,
+          same Argo CD apps deployed there; record demo video
+                                       <- learn IaC (OpenTofu = Terraform)
+  Week 6: k6 load test, chaos test, README with architecture diagram,
+          docs/runbook.md, results table, resume bullets
+
+
+---------------------------------------------------------------------
+11. INTERVIEW TALKING POINTS
+---------------------------------------------------------------------
+  - Batch vs. online inference: why this project needs both
+  - Training/serving skew and how Feast prevents it
+  - Why time-based backtesting, and how you tested for leakage
+  - Champion/challenger gates + canary + automatic rollback
+  - Data drift vs. concept drift; how drift triggers retraining
+  - Why GitOps (git is the source of truth, easy rollback, audit)
+  - Cloud-agnostic design: why S3 API (MinIO), Postgres operator and
+    Helm make the platform portable; what changes to move to AWS
+    (only the infra module: EKS, S3, RDS – charts stay the same)
+  - Running with restricted internet: mirrors, own registry, offline
+    data – same skills as "air-gapped" deployments in banks/government
+  - Cost: what it costs on one VPS and how you kept it low
+
+RESUME BULLETS (replace [ ] with measured values)
+  - "Built DemandOps, an automated demand forecasting platform for
+     30K Walmart product-store series on Kubernetes: Airflow pipelines,
+     Feast feature store, MLflow registry and KServe serving at [X] ms p95."
+  - "Closed the MLOps loop: Evidently drift alerts trigger retraining,
+     challenger models pass accuracy/bias/latency gates and ship via
+     Argo CD canary releases with automatic rollback."
+  - "Designed a cloud-agnostic, self-hosted stack (k3s, MinIO,
+     CloudNativePG, Harbor) provisioned with OpenTofu + Ansible; the
+     same Helm charts run on a laptop and a production VPS."
+  Tech: Python, LightGBM, Kubernetes (k3s), Helm, OpenTofu/Terraform,
+  Ansible, MinIO, CloudNativePG, Harbor, Airflow, Feast, MLflow, DVC,
+  KServe, Argo CD, Argo Rollouts, Prometheus, Grafana, Evidently,
+  Great Expectations, k6, GitHub Actions
+
+
+---------------------------------------------------------------------
+12. WORKING FROM IRAN – SANCTIONS-SAFE SETUP
+---------------------------------------------------------------------
+REPLACEMENT TABLE (managed cloud service -> self-hosted equivalent)
+  AWS S3              -> MinIO (same S3 API: boto3, DVC, MLflow work
+                         unchanged) or ArvanCloud Object Storage (S3 API)
+  AWS ECR / Docker Hub-> Harbor (own registry, also proxy-cache)
+  AWS RDS Postgres    -> CloudNativePG operator (HA + backups to MinIO)
+  ElastiCache Redis   -> Redis Helm chart (or Valkey)
+  AWS EKS             -> k3s on Iranian VPS / k3d on laptop
+  Terraform + registry-> OpenTofu (same HCL language; its registry is
+                         not blocked like HashiCorp's downloads)
+  AWS Secrets Manager -> sealed-secrets or External Secrets + Vault
+  CloudWatch          -> Prometheus + Grafana + Loki
+  SageMaker endpoints -> KServe (RawDeployment mode)
+  Slack alerts        -> SMTP email / messenger bot webhook
+  GitLab.com          -> GitHub (works for Iranian accounts) or a
+                         self-hosted Gitea with Gitea Actions
+
+MIRRORS (set up in Week 0, save the configs in infra/mirrors/)
+  - Docker images: use an Iranian Docker Hub mirror (several exist,
+    e.g. from ArvanCloud and others – check which is alive today) in
+    /etc/docker/daemon.json "registry-mirrors" and in k3s/k3d
+    registries.yaml. Better: Harbor "proxy cache" project -> every
+    image is downloaded ONCE and cached forever.
+  - Python packages: pip.conf / uv index-url pointing to an Iranian
+    PyPI mirror; fall back to a proxy when one package is missing.
+  - Helm charts: `helm pull` charts once, keep .tgz files in the repo
+    or push them to Harbor (Harbor is also an OCI chart registry).
+  - Models / datasets: download once, store with DVC in MinIO.
+  - Keep a short docs/offline-setup.md – it is also a nice portfolio
+    document ("air-gapped deployment guide").
+
+HARDWARE / BUDGET
+  Laptop k3d: 16 GB RAM is comfortable (use the 100-series sample for
+  daily dev, full 30K series only in the nightly DAG).
+  VPS demo: ~4 vCPU / 8-16 GB RAM is enough for one-node k3s with
+  KServe RawDeployment; turn Airflow workers to 0 when idle.
+
+WHEN YOU MOVE ABROAD / GET CLOUD ACCESS
+  Add infra/tofu/modules/aws-eks (+ S3, RDS). You can write and test
+  the S3/IAM parts TODAY with LocalStack (free, runs in Docker) to show
+  AWS IaC knowledge on your resume without an AWS account.

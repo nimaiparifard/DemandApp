@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demandops
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_GITHUB_USER/demandops.git
+    targetRevision: main
+    path: infra/helm/demandops
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-local.yaml   # `make gitops-env ENV=vps` rewrites this line for the server
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demandops
+  ignoreDifferences:
+    - group: argoproj.io
+      kind: Rollout
+      jsonPointers: [/spec/replicas]   # HPA owns replicas
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]

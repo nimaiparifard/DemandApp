@@ -1,0 +1,13 @@
+# One-node k3s on a VPS (4 vCPU / 8-16 GB): full data, TLS via cert-manager.
+image:
+  registry: harbor.example.ir/demandops
+serving:
+  replicas: 2
+  ingress:
+    host: forecast.example.ir
+    tls: true
+    clusterIssuer: letsencrypt
+streamlit:
+  host: app.example.ir
+env:
+  DEMANDOPS_N_SERIES: "0"

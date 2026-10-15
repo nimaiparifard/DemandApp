@@ -1,0 +1,43 @@
+{{- if .Values.alertBridge.enabled }}
+# Alertmanager webhook -> Airflow REST API: closes the drift -> retrain loop.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-bridge
+  labels: {{- include "demandops.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: alert-bridge }
+  template:
+    metadata:
+      labels: { app: alert-bridge }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      containers:
+        - name: bridge
+          image: {{ include "demandops.image" (list . .Values.image.serving) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uvicorn", "demandops.monitoring.alert_bridge:build_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
+          ports: [{ name: http, containerPort: 8080 }]
+          env:
+            - { name: AIRFLOW_URL, value: {{ .Values.alertBridge.airflowUrl | quote }} }
+            - name: AIRFLOW_USER
+              valueFrom: { secretKeyRef: { name: {{ .Values.existingSecret }}, key: AIRFLOW_USER } }
+            - name: AIRFLOW_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ .Values.existingSecret }}, key: AIRFLOW_PASSWORD } }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alert-bridge
+  labels: {{- include "demandops.labels" . | nindent 4 }}
+spec:
+  selector: { app: alert-bridge }
+  ports: [{ name: http, port: 8080, targetPort: http }]
+{{- end }}

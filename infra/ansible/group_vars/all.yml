@@ -1,0 +1,18 @@
+k3s_version: v1.31.4+k3s1
+# Official installer (https://get.k3s.io) and GitHub releases can be blocked. Options, in order:
+#   1. k3s_binary_local: path on YOUR machine to a k3s binary downloaded once (copied via SSH)
+#   2. k3s_binary_url: any reachable mirror of the release asset
+k3s_binary_local: ""
+k3s_binary_url: "https://github.com/k3s-io/k3s/releases/download/{{ k3s_version }}/k3s"
+# --cluster-init = embedded etcd (needed for `k3s etcd-snapshot` backups, works on a single node)
+k3s_extra_args: "--cluster-init --disable traefik --write-kubeconfig-mode 0640"
+registries_template: "{{ playbook_dir }}/../mirrors/registries.yaml"
+
+argocd_chart_repo: https://argoproj.github.io/argo-helm
+argocd_chart_version: 10.10.5
+
+ssh_port: 22
+admin_cidrs: []            # empty = do not restrict SSH/6443 at the host firewall (cloud SG still applies)
+
+backup_dir: /var/backups/demandops
+backup_retention_days: 14

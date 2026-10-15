@@ -1,0 +1,19 @@
+# Own container registry (replaces ECR / Docker Hub). Create "proxy cache" projects pointing at
+# docker.io / ghcr.io / quay.io with scripts/harbor_setup.sh: every upstream image is pulled ONCE.
+expose:
+  type: ingress
+  tls: { enabled: false }
+  ingress:
+    hosts: { core: harbor.demandops.local }
+    className: nginx
+externalURL: http://harbor.demandops.local
+persistence:
+  persistentVolumeClaim:
+    registry: { size: 40Gi }
+    database: { size: 2Gi }
+    redis: { size: 1Gi }
+    jobservice: { jobLog: { size: 1Gi } }
+    trivy: { size: 5Gi }
+harborAdminPassword: ChangeMeNow      # DEMO ONLY
+trivy: { enabled: true }
+metrics: { enabled: true }

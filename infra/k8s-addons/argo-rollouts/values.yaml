@@ -1,0 +1,6 @@
+controller:
+  resources: { requests: { cpu: 50m, memory: 64Mi } }
+dashboard:
+  enabled: true
+providerRBAC:
+  enabled: true

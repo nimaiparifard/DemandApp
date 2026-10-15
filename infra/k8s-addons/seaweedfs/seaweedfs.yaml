@@ -1,0 +1,87 @@
+# S3-compatible object store (replaces AWS S3). MinIO's community images are no longer published,
+# so the platform runs SeaweedFS (master + volume + filer + S3 gateway in one pod). Clients only use
+# the S3 API: boto3, pyarrow, MLflow and CloudNativePG/barman all work unchanged.
+# See docs/adr/0003-seaweedfs-instead-of-minio.md
+#
+# Needs the Secret `s3-credentials` (SealedSecret, see ../secrets.example.yaml) with keys:
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, s3.json   (identity config for the S3 gateway)
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3
+spec:
+  selector: { app: seaweedfs }
+  ports:
+    - { name: s3, port: 8333, targetPort: s3 }
+    - { name: master, port: 9333, targetPort: master }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: seaweedfs
+spec:
+  serviceName: s3
+  replicas: 1
+  selector:
+    matchLabels: { app: seaweedfs }
+  template:
+    metadata:
+      labels: { app: seaweedfs }
+    spec:
+      containers:
+        - name: seaweedfs
+          image: chrislusf/seaweedfs:4.48
+          args:
+            - server
+            - -dir=/data
+            - -s3
+            - -s3.config=/etc/seaweedfs/s3.json
+            - -master.volumeSizeLimitMB=1024
+            - -volume.max=100
+          ports:
+            - { name: s3, containerPort: 8333 }
+            - { name: master, containerPort: 9333 }
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "wget -qO- http://127.0.0.1:9333/cluster/status >/dev/null && nc -z 127.0.0.1 8333"]
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            limits: { memory: 2Gi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: config, mountPath: /etc/seaweedfs, readOnly: true }
+      volumes:
+        - name: config
+          secret:
+            secretName: s3-credentials
+            items: [{ key: s3.json, path: s3.json }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 20Gi } }
+---
+# Creates the buckets once the store is up (idempotent).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: s3-buckets
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create-buckets
+          image: chrislusf/seaweedfs:4.48
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until nc -z s3 9333; do sleep 2; done
+              for b in demandops-landing demandops-features mlflow-artifacts dvc-store reports pg-backups; do
+                echo "s3.bucket.create -name $b" | weed shell -master=s3:9333 || true
+              done

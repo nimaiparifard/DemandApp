@@ -1,0 +1,7 @@
+apiVersion: v2
+name: demandops
+description: DemandOps application chart - inference API (Argo Rollouts canary or KServe), Streamlit UI, data simulator
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+icon: https://raw.githubusercontent.com/kubernetes/kubernetes/master/logo/logo.png

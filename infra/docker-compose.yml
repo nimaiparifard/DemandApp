@@ -1,0 +1,191 @@
+# Local full stack WITHOUT Kubernetes (Week-1 setup and quick demos):
+#   cp .env.example .env && make up && make demo
+# Mirrors for restricted networks: set REGISTRY_PREFIX (e.g. harbor.local/proxy-dockerhub/) in .env.
+name: demandops
+
+x-s3-env: &s3-env
+  S3_ENDPOINT_URL: http://s3:8333
+  MLFLOW_S3_ENDPOINT_URL: http://s3:8333
+  AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-demandops}
+  AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-demandops-secret}
+
+services:
+  postgres:
+    image: ${REGISTRY_PREFIX:-}postgres:16
+    environment:
+      POSTGRES_USER: demandops
+      POSTGRES_PASSWORD: demandops
+      POSTGRES_DB: demandops
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demandops"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: ${REGISTRY_PREFIX:-}redis:7
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # S3-compatible object store. MinIO's community images were withdrawn from Docker Hub/Quay, so
+  # the platform uses SeaweedFS; every client talks the plain S3 API, so swapping back (or to
+  # AWS S3) is a change of endpoint + credentials only. See docs/adr/0003-seaweedfs-instead-of-minio.md
+  s3:
+    image: ${REGISTRY_PREFIX:-}chrislusf/seaweedfs:4.48
+    command: server -dir=/data -s3 -s3.config=/etc/seaweedfs/s3.json -master.volumeSizeLimitMB=1024 -volume.max=30
+    volumes:
+      - s3data:/data
+      - ./docker/s3.json:/etc/seaweedfs/s3.json:ro
+    ports: ["8333:8333", "9333:9333", "8888:8888"]  # S3 API, master UI, filer (file browser)
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9333/cluster/status >/dev/null && nc -z 127.0.0.1 8333"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  s3-init:
+    image: ${REGISTRY_PREFIX:-}chrislusf/seaweedfs:4.48
+    depends_on:
+      s3: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for b in demandops-landing demandops-features mlflow-artifacts dvc-store reports pg-backups; do
+          echo "s3.bucket.create -name $$b" | weed shell -master=s3:9333 || true
+        done
+    restart: "no"
+
+  mlflow:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.mlflow
+    environment: *s3-env
+    depends_on:
+      postgres: { condition: service_healthy }
+      s3-init: { condition: service_completed_successfully }
+    ports: ["5000:5000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:5000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  serving:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile
+      target: serving
+    environment:
+      <<: *s3-env
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      FEATURE_BACKEND: parquet
+      FEATURES_URI: s3://demandops-features
+      DATABASE_URL: postgresql+psycopg2://demandops:demandops@postgres:5432/demandops
+      DEMANDOPS_DATA_DIR: /data
+    volumes: ["../data:/data:ro"]
+    depends_on:
+      mlflow: { condition: service_healthy }
+    ports: ["8001:8001"]
+    restart: on-failure  # starts before a champion exists on a fresh stack; retried after `make demo`
+
+  streamlit:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.streamlit
+    environment:
+      API_URL: http://serving:8001
+    depends_on: [serving]
+    ports: ["${STREAMLIT_PORT:-8501}:8501"]
+
+  # one-shot jobs: docker compose --profile jobs run --rm jobs train --n-series 300
+  jobs:
+    profiles: ["jobs"]
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile
+      target: jobs
+    environment:
+      <<: *s3-env
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      LANDING_URI: s3://demandops-landing
+      FEATURES_URI: s3://demandops-features
+      DATABASE_URL: postgresql+psycopg2://demandops:demandops@postgres:5432/demandops
+      DEMANDOPS_DATA_DIR: /data
+      DEMANDOPS_N_SERIES: ${DEMANDOPS_N_SERIES:-300}
+      SIMULATOR_START_DAY: ${SIMULATOR_START_DAY:-1913}
+    volumes: ["../data:/data:ro"]
+    depends_on:
+      mlflow: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+
+  # Airflow UI + scheduler in one container (`airflow standalone`, SQLite, no login) - for demos.
+  # Production uses the Helm chart with KubernetesExecutor (infra/k8s-addons/airflow).
+  airflow:
+    profiles: ["airflow"]
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile.airflow
+    command: ["standalone"]
+    environment:
+      <<: *s3-env
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "True"
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      LANDING_URI: s3://demandops-landing
+      FEATURES_URI: s3://demandops-features
+      DATABASE_URL: postgresql+psycopg2://demandops:demandops@postgres:5432/demandops
+      DEMANDOPS_DATA_DIR: /data
+      DEMANDOPS_N_SERIES: ${DEMANDOPS_N_SERIES:-300}
+      SIMULATOR_START_DAY: ${SIMULATOR_START_DAY:-1913}
+      PUSHGATEWAY_URL: pushgateway:9091
+      AIRFLOW__SMTP__SMTP_HOST: mailpit
+      AIRFLOW__SMTP__SMTP_PORT: "1025"
+      AIRFLOW__SMTP__SMTP_STARTTLS: "False"
+      AIRFLOW__SMTP__SMTP_SSL: "False"
+      AIRFLOW__SMTP__SMTP_MAIL_FROM: demandops@example.com
+    volumes: ["../data:/data:ro"]
+    depends_on:
+      mlflow: { condition: service_healthy }
+      mailpit: { condition: service_started }
+    ports: ["8080:8080"]
+
+  # catches the e-mails the DAGs send (retrain decision); web UI on :8025
+  mailpit:
+    profiles: ["airflow"]
+    image: ${REGISTRY_PREFIX:-}axllent/mailpit:latest
+    ports: ["8025:8025"]
+
+  pushgateway:
+    image: ${REGISTRY_PREFIX:-}prom/pushgateway:latest
+    ports: ["9091:9091"]
+
+  prometheus:
+    image: ${REGISTRY_PREFIX:-}prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports: ["9090:9090"]
+
+  grafana:
+    image: ${REGISTRY_PREFIX:-}grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus]
+    ports: ["3001:3000"]
+
+volumes:
+  pgdata:
+  s3data:

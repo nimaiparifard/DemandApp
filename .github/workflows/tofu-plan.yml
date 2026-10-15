@@ -1,0 +1,34 @@
+name: tofu-plan
+on:
+  pull_request:
+    paths: ["infra/tofu/**"]
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+      - name: fmt + validate
+        run: |
+          tofu -chdir=infra/tofu fmt -recursive -check
+          for e in local vps; do
+            tofu -chdir=infra/tofu/envs/$e init -backend=false -input=false
+            tofu -chdir=infra/tofu/envs/$e validate
+          done
+      - name: Plan the VPS environment (only when the API key secret exists)
+        if: ${{ secrets.ARVAN_API_KEY != '' }}
+        working-directory: infra/tofu/envs/vps
+        env:
+          TF_VAR_arvan_api_key: ${{ secrets.ARVAN_API_KEY }}
+          TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
+          TF_VAR_admin_cidrs: ${{ vars.ADMIN_CIDRS }}
+          TF_VAR_domain: ${{ vars.DOMAIN }}
+        run: |
+          tofu init -input=false
+          tofu plan -input=false -no-color | tee plan.txt
+      - name: Comment the plan on the PR
+        if: ${{ secrets.ARVAN_API_KEY != '' }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: infra/tofu/envs/vps/plan.txt

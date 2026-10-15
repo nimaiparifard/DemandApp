@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: demandops
+    folder: DemandOps
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

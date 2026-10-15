@@ -1,0 +1,6 @@
+[core]
+    remote = s3store
+['remote "s3store"']
+    url = s3://dvc-store
+    endpointurl = http://localhost:8333
+    # credentials: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from the environment (.env), never in git

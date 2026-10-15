@@ -1,0 +1,55 @@
+# Airflow on Kubernetes: KubernetesExecutor = every task runs in its own pod (scale-to-zero when idle).
+# DAGs are baked into the image (pipelines/dags), so a DAG change ships as one immutable artifact.
+defaultAirflowRepository: harbor.demandops.local/demandops/demandops-airflow
+defaultAirflowTag: latest
+airflowVersion: "3.2.2"
+executor: KubernetesExecutor
+
+postgresql: { enabled: false }          # metadata DB = CloudNativePG
+redis: { enabled: false }
+data:
+  metadataSecretName: airflow-metadata  # key `connection`: postgresql+psycopg2://demandops:***@demandops-pg-rw.storage.svc/airflow
+
+env:
+  - { name: MLFLOW_TRACKING_URI, value: "http://mlflow.mlops.svc:5000" }
+  - { name: MLFLOW_S3_ENDPOINT_URL, value: "http://s3.storage.svc:8333" }
+  - { name: S3_ENDPOINT_URL, value: "http://s3.storage.svc:8333" }
+  - { name: LANDING_URI, value: "s3://demandops-landing" }
+  - { name: FEATURES_URI, value: "s3://demandops-features" }
+  - { name: DEMANDOPS_DATA_DIR, value: "/data" }
+  - { name: PUSHGATEWAY_URL, value: "pushgateway-prometheus-pushgateway.monitoring.svc:9091" }
+  - { name: PYTHONPATH, value: "/opt/airflow" }
+  - { name: GITOPS_API_URL, value: "https://api.github.com" }
+
+# AWS_*, DATABASE_URL, GITOPS_REPO, GITOPS_TOKEN, AIRFLOW_* all come from one Secret (SealedSecret)
+extraEnvFrom: |
+  - secretRef:
+      name: demandops-secrets
+
+volumes:
+  - name: m5-data
+    persistentVolumeClaim: { claimName: demandops-m5-data }
+volumeMounts:
+  - { name: m5-data, mountPath: /data, readOnly: true }
+
+config:
+  email:
+    email_backend: airflow.utils.email.send_email_smtp
+  smtp:
+    smtp_host: smtp.demandops.svc       # or your SMTP relay
+    smtp_mail_from: demandops@example.com
+    smtp_starttls: "False"
+    smtp_ssl: "False"
+
+dags:
+  persistence: { enabled: false }
+  gitSync: { enabled: false }
+
+scheduler:
+  resources: { requests: { cpu: 200m, memory: 1Gi } }
+apiServer:
+  resources: { requests: { cpu: 100m, memory: 512Mi } }
+triggerer: { enabled: false }
+statsd: { enabled: false }
+workers:
+  resources: { requests: { cpu: 500m, memory: 2Gi }, limits: { memory: 6Gi } }

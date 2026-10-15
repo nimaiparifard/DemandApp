@@ -1,0 +1,40 @@
+{{- if eq .Values.serving.mode "kserve" }}
+# KServe in RawDeployment mode: plain Deployment/Service/HPA, no Knative or Istio needed.
+# Custom container = our FastAPI image, which speaks the same /v2/models/<name>/infer route.
+# Note: KServe's own canaryTrafficPercent only exists in Serverless (Knative) mode, so the
+# automatic canary + rollback lives in the `rollout` mode (see docs/adr/0002).
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: demand-forecaster
+  labels: {{- include "demandops.labels" . | nindent 4 }}
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
+    {{- if .Values.serving.hpa.enabled }}
+    serving.kserve.io/autoscalerClass: hpa
+    serving.kserve.io/targetUtilizationPercentage: {{ .Values.serving.hpa.targetCPUUtilizationPercentage | quote }}
+    {{- end }}
+spec:
+  predictor:
+    minReplicas: {{ if .Values.serving.hpa.enabled }}{{ .Values.serving.hpa.minReplicas }}{{ else }}{{ .Values.serving.replicas }}{{ end }}
+    maxReplicas: {{ if .Values.serving.hpa.enabled }}{{ .Values.serving.hpa.maxReplicas }}{{ else }}{{ .Values.serving.replicas }}{{ end }}
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+    containers:
+      - name: kserve-container
+        image: {{ include "demandops.image" (list . .Values.image.serving) }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+          - { containerPort: {{ .Values.serving.port }}, protocol: TCP }
+        env: {{- include "demandops.env" . | nindent 10 }}
+          {{- include "demandops.serving.env" . | nindent 10 }}
+        readinessProbe:
+          httpGet: { path: /health, port: {{ .Values.serving.port }} }
+        resources: {{- toYaml .Values.serving.resources | nindent 10 }}
+        volumeMounts:
+          - { name: data, mountPath: /data, readOnly: true }
+    volumes:
+      - name: data
+        persistentVolumeClaim: { claimName: {{ .Values.dataVolume.claimName }} }
+{{- end }}

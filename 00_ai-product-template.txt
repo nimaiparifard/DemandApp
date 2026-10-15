@@ -1,0 +1,384 @@
+=====================================================================
+ PROJECT 00 – ai-product-template
+ "One template, every project": the shared skeleton for all portfolio
+ projects (Django + React + Serving + Docker + CI/CD + MLOps)
+=====================================================================
+
+WHY THIS EXISTS
+---------------
+Every project (RiskLens, FinSight, GraphCart, ...) needs the same 70% of
+plumbing: auth, database, async jobs, model serving, frontend shell,
+Docker, CI/CD, MLflow, monitoring. Build it ONCE, properly, as a public
+template repo (copier / cookiecutter). Benefits:
+  - All projects look consistent -> recruiters see a mature engineer
+  - You spend your time on the ML part, not on re-writing Docker files
+  - Interview story: "I built an internal platform template, each product
+    is generated from it, and swapping components is a config change"
+  - The template itself is a resume line (Platform / MLOps skill)
+
+Tool to generate projects: `copier` (supports updating old projects when
+the template changes -> "easy to update later"). Alternative: cookiecutter.
+
+
+---------------------------------------------------------------------
+1. TECHNOLOGY STACK (and WHY each one)
+---------------------------------------------------------------------
+Language & tooling
+  Python 3.12          main language
+  uv                   very fast dependency manager + lockfile (uv.lock)
+  ruff                 linter + formatter (replaces flake8/isort/black)
+  mypy (strict on ml/) static typing
+  pre-commit           runs ruff/mypy/secret-scan before every commit
+  Makefile             one-word commands for everything
+
+Backend (business logic, users, data)
+  Django 5 + Django REST Framework
+  drf-spectacular      auto OpenAPI/Swagger docs at /api/docs
+  djangorestframework-simplejwt   JWT auth (access + refresh tokens)
+  django-environ       12-factor settings from env variables
+  django-filter        filtering on list endpoints
+  Celery + Redis       background jobs (training, indexing, OCR, ...)
+  django-celery-beat   scheduled jobs (nightly retrain, drift check)
+  channels (optional)  WebSockets for streaming (chat, live transcripts)
+  PostgreSQL 16        main DB; pgvector extension for embeddings
+
+Model serving (separate microservice)
+  FastAPI + Uvicorn    low-latency inference API, async, pydantic schemas
+  (or BentoML)         if you want built-in batching/packaging
+  Loads the model from MLflow Model Registry by alias ("champion")
+
+Frontend
+  React 18 + TypeScript + Vite
+  Tailwind CSS + shadcn/ui   clean modern components quickly
+  TanStack Query       server-state caching, retries
+  React Router         pages
+  Recharts / ECharts   charts (dashboards, SHAP plots, metrics)
+  Zod                  validate API responses
+  openapi-typescript   generate TS types from Django OpenAPI schema
+                       -> frontend and backend never go out of sync
+
+MLOps / LLMOps
+  MLflow               experiment tracking + Model Registry (aliases:
+                       champion / challenger)
+  DVC                  data & model versioning (remote = MinIO S3)
+  MinIO                S3-compatible object storage (local "cloud")
+  Optuna               hyper-parameter optimization
+  Evidently            data drift / model quality reports
+  Great Expectations or pandera   data validation
+  Langfuse             LLM tracing: prompts, tokens, cost, latency
+  RAGAS / DeepEval     RAG & LLM evaluation
+
+Infra & DevOps
+  Docker (multi-stage builds, non-root user, slim images)
+  Docker Compose       local full stack in one command
+  Nginx                reverse proxy, serves built frontend
+  GitHub Actions       CI, CD, and ML pipelines
+  GHCR                 container registry (free with GitHub)
+  Kubernetes (kind/k3s locally) + Helm chart   (optional, strong plus)
+  Terraform (optional) for a cloud VM / managed DB
+
+Observability
+  Prometheus           metrics (request latency, model latency, errors)
+  Grafana              dashboards (pre-provisioned JSON in repo)
+  structlog            JSON structured logs with request_id
+  Sentry (optional)    error tracking (free tier)
+
+Testing
+  pytest, pytest-django, pytest-cov, factory_boy (test data),
+  hypothesis (property tests for feature functions),
+  httpx (API tests for FastAPI), Playwright (frontend e2e),
+  Vitest + React Testing Library (frontend unit tests)
+
+
+---------------------------------------------------------------------
+2. REPOSITORY STRUCTURE (monorepo)
+---------------------------------------------------------------------
+{{project_name}}/
+├── README.md                    # see section 9
+├── Makefile
+├── pyproject.toml               # workspace root (uv workspaces)
+├── uv.lock
+├── .env.example                 # every variable documented, no secrets
+├── .pre-commit-config.yaml
+├── .github/
+│   ├── workflows/
+│   │   ├── ci.yml               # lint, type-check, tests, build
+│   │   ├── cd.yml               # push images, deploy
+│   │   ├── ml-train.yml         # train -> evaluate -> register -> promote
+│   │   └── ml-eval.yml          # quality gates (RAGAS / metrics) on PR
+│   ├── PULL_REQUEST_TEMPLATE.md
+│   └── dependabot.yml
+├── backend/
+│   ├── Dockerfile
+│   ├── manage.py
+│   ├── pyproject.toml
+│   ├── config/
+│   │   ├── settings/
+│   │   │   ├── base.py
+│   │   │   ├── dev.py
+│   │   │   ├── test.py
+│   │   │   └── prod.py
+│   │   ├── urls.py
+│   │   ├── celery.py
+│   │   └── asgi.py / wsgi.py
+│   ├── apps/
+│   │   ├── users/               # custom User model, JWT, roles
+│   │   ├── core/                # base models (TimeStampedModel, UUID pk),
+│   │   │                        # exceptions, pagination, permissions
+│   │   └── <domain>/            # one app per business concept
+│   │       ├── models.py
+│   │       ├── admin.py
+│   │       ├── services.py      # WRITE logic (create/update, call ML)
+│   │       ├── selectors.py     # READ logic (queries)
+│   │       ├── tasks.py         # Celery tasks (thin, call services)
+│   │       ├── clients.py       # HTTP client to serving/ (retries, timeout)
+│   │       ├── api/
+│   │       │   ├── serializers.py
+│   │       │   ├── views.py
+│   │       │   └── urls.py
+│   │       └── tests/
+│   └── tests/                   # cross-app integration tests
+├── ml/
+│   ├── pyproject.toml           # installable package: pip install -e ml
+│   ├── configs/                 # YAML (Hydra or pydantic-settings)
+│   │   ├── data.yaml
+│   │   ├── model.yaml
+│   │   └── train.yaml
+│   ├── src/{{pkg}}/
+│   │   ├── __init__.py
+│   │   ├── config.py            # typed config objects (pydantic)
+│   │   ├── interfaces.py        # ABCs / Protocols (see section 3)
+│   │   ├── registry.py          # name -> class factory (plug-ins)
+│   │   ├── data/                # download, load, validate, split
+│   │   ├── features/            # pure functions, unit-tested
+│   │   ├── models/              # model wrappers implementing interfaces
+│   │   ├── training/            # train loop, MLflow logging
+│   │   ├── evaluation/          # metrics, reports, plots
+│   │   ├── pipelines/           # orchestrate steps end-to-end
+│   │   └── cli.py               # Typer CLI: `pkg train`, `pkg evaluate`
+│   ├── tests/
+│   └── notebooks/               # EDA only, numbered: 01_eda.ipynb ...
+├── serving/
+│   ├── Dockerfile
+│   ├── app/
+│   │   ├── main.py              # FastAPI app factory
+│   │   ├── api/routes.py
+│   │   ├── schemas.py           # pydantic request/response
+│   │   ├── model_loader.py      # load from MLflow by alias, hot-reload
+│   │   ├── metrics.py           # Prometheus instrumentation
+│   │   └── deps.py
+│   └── tests/
+├── frontend/
+│   ├── Dockerfile               # build stage -> nginx stage
+│   ├── package.json
+│   ├── src/
+│   │   ├── api/                 # generated types + fetch client
+│   │   ├── components/          # reusable UI (shadcn)
+│   │   ├── features/<feature>/  # pages + hooks per feature
+│   │   ├── hooks/
+│   │   ├── lib/
+│   │   └── routes.tsx
+│   └── tests/
+├── infra/
+│   ├── docker-compose.yml       # full stack
+│   ├── docker-compose.override.yml  # dev: hot-reload volumes
+│   ├── nginx/nginx.conf
+│   ├── prometheus/prometheus.yml
+│   ├── grafana/dashboards/*.json
+│   ├── helm/{{project_name}}/   # optional k8s chart
+│   └── terraform/               # optional
+├── data/                        # gitignored, tracked by DVC
+│   ├── raw/  interim/  processed/
+├── dvc.yaml                     # DVC pipeline stages
+├── dvc.lock
+├── docs/
+│   ├── architecture.md          # + diagram (draw.io / Excalidraw / mermaid)
+│   ├── adr/0001-use-django-and-fastapi.md   # decision records
+│   ├── api.md
+│   └── results.md               # experiment tables
+└── scripts/                     # one-off helpers (seed db, download data)
+
+
+---------------------------------------------------------------------
+3. CLEAN ARCHITECTURE RULES (the "easy to change" part)
+---------------------------------------------------------------------
+Rule 1 – Layers and dependency direction
+  frontend -> backend API -> services -> (serving HTTP | ml package)
+  The ml/ package NEVER imports Django. It can be used from a notebook,
+  a CLI, a Celery task or the serving app.
+
+Rule 2 – Program to interfaces (ml/src/{{pkg}}/interfaces.py)
+  Example:
+      class Embedder(Protocol):
+          def embed(self, texts: list[str]) -> np.ndarray: ...
+
+      class VectorStore(Protocol):
+          def upsert(self, ids, vectors, metadata) -> None: ...
+          def search(self, vector, k: int, filters: dict | None) -> list[Hit]: ...
+
+      class LLMProvider(Protocol):
+          def generate(self, messages: list[Message], **kw) -> str: ...
+          def stream(self, messages: list[Message], **kw) -> Iterator[str]: ...
+
+  Implementations: OpenAIProvider, VLLMProvider, OllamaProvider ...
+  A registry maps names to classes:
+      PROVIDERS = {"openai": OpenAIProvider, "vllm": VLLMProvider}
+      llm = PROVIDERS[cfg.llm.provider](**cfg.llm.params)
+  -> Changing the LLM or vector DB = changing one YAML line.
+
+Rule 3 – Config, not code
+  All paths, model names, thresholds, k values, prompts live in configs/
+  or the DB. Prompts are versioned files (prompts/answer_v2.jinja).
+
+Rule 4 – Thin views, thin tasks
+  Django views: validate input -> call service -> serialize output.
+  Celery tasks: load ids -> call service. All logic is in services.py.
+
+Rule 5 – Pure, tested feature functions
+  Feature engineering = pure functions (DataFrame in, DataFrame out),
+  unit-tested with small fixtures. Same function used in training AND
+  serving -> no training/serving skew.
+
+Rule 6 – Typed boundaries
+  pydantic models at every boundary: API requests, configs, model outputs.
+
+Rule 7 – Reproducibility
+  Seeds fixed, data versioned with DVC, code version (git SHA) + data
+  version (DVC hash) + config logged in every MLflow run.
+
+Rule 8 – Fail loudly, log structurally
+  Custom exceptions in core/exceptions.py, mapped to HTTP errors.
+  Every log line JSON with request_id, user_id, model_version.
+
+
+---------------------------------------------------------------------
+4. DOCKER COMPOSE SERVICES (infra/docker-compose.yml)
+---------------------------------------------------------------------
+  postgres      postgres:16 + pgvector     port 5432
+  redis         redis:7                    port 6379
+  minio         S3 storage (DVC + MLflow artifacts + uploads)  9000/9001
+  mlflow        tracking server (backend store = postgres,
+                artifact store = minio)    port 5000
+  backend       Django (gunicorn/uvicorn)  port 8000
+  worker        Celery worker (same image as backend)
+  beat          Celery beat (scheduled jobs)
+  serving       FastAPI model server       port 8001
+  frontend      nginx serving React build  port 3000
+  prometheus    port 9090
+  grafana       port 3001 (dashboards auto-provisioned)
+  langfuse      (LLM projects only)        port 3002
+
+  All services have healthchecks; backend waits for postgres healthy.
+  `make up` = docker compose up -d --build ; `make down` ; `make logs`
+
+
+---------------------------------------------------------------------
+5. CI/CD PIPELINES (GitHub Actions)
+---------------------------------------------------------------------
+ci.yml  (on every push / PR)
+  job lint:        ruff check, ruff format --check, mypy, eslint, tsc
+  job test-backend: services postgres+redis -> pytest --cov (fail < 80%)
+  job test-ml:     pytest ml/tests (small fixture data, CPU only)
+  job test-serving
+  job test-frontend: vitest
+  job build:       docker build all images (cache with buildx)
+  job e2e (main only): docker compose up -> Playwright tests
+  job security:    pip-audit, npm audit, trivy image scan, gitleaks
+
+cd.yml  (on tag v* or push to main)
+  build & push images to ghcr.io/<user>/<project>-<service>:<sha>
+  deploy: ssh to VM + docker compose pull/up  OR  helm upgrade on k8s
+  smoke test: curl /health endpoints
+
+ml-train.yml  (manual dispatch, schedule, or when data/ or ml/ changes)
+  1. dvc pull (data from MinIO / S3)
+  2. validate data (Great Expectations / pandera) -> fail if broken
+  3. train (logs params, metrics, artifacts to MLflow)
+  4. evaluate on frozen test set
+  5. compare with current "champion" in registry
+     - if better on primary metric AND not worse on guard metrics:
+       register new version, set alias "challenger"
+  6. (manual approval environment) promote challenger -> champion
+  7. trigger serving redeploy / hot-reload endpoint
+  8. post a markdown report (metrics table) as PR comment / job summary
+
+ml-eval.yml (on PR touching prompts/, ml/, retrieval code)
+  run evaluation set (e.g. RAGAS, accuracy on golden set)
+  fail the PR if metric drops more than a threshold vs. main
+
+
+---------------------------------------------------------------------
+6. OBSERVABILITY
+---------------------------------------------------------------------
+  Serving exposes /metrics: request count, latency histogram,
+  prediction distribution, model_version label.
+  Grafana dashboards (versioned JSON in repo):
+    - API health (RPS, p50/p95/p99 latency, error rate)
+    - Model (prediction distribution over time, drift score)
+    - LLM (tokens, cost/day, latency per step) – via Langfuse
+  Celery beat job: nightly Evidently drift report -> saved to MinIO,
+  link stored in DB, alert if drift > threshold.
+
+
+---------------------------------------------------------------------
+7. SECURITY BASICS (cheap but impressive)
+---------------------------------------------------------------------
+  - No secrets in git (gitleaks in CI), .env.example only
+  - JWT with short-lived access tokens, refresh rotation
+  - Rate limiting (DRF throttling) on expensive endpoints (LLM)
+  - File upload validation (type, size), stored in MinIO not on disk
+  - Docker images run as non-root, scanned with trivy
+  - CORS restricted, HTTPS in prod (Caddy / Let's Encrypt)
+
+
+---------------------------------------------------------------------
+8. MAKEFILE TARGETS
+---------------------------------------------------------------------
+  make setup      install uv deps, npm deps, pre-commit hooks
+  make up/down    docker compose
+  make migrate    django migrations
+  make seed       load demo data
+  make data       download + dvc add raw data
+  make train      run training pipeline locally (MLflow logged)
+  make evaluate   run evaluation
+  make test       all tests
+  make lint       ruff + mypy + eslint
+  make types      regenerate frontend TS types from OpenAPI
+  make docs       build docs
+
+
+---------------------------------------------------------------------
+9. README TEMPLATE (every project)
+---------------------------------------------------------------------
+  1. Title + one-line pitch + badges (CI, coverage, license)
+  2. Demo GIF (30 sec) + link to live demo / video
+  3. Problem & why it matters (business framing)
+  4. Architecture diagram
+  5. Results table (REAL numbers, baseline vs. yours)
+  6. Tech stack
+  7. Quick start: `cp .env.example .env && make up`
+  8. Project structure (short)
+  9. How to swap components (LLM, vector DB, model) – shows design
+  10. Roadmap / future work
+  11. License (MIT)
+
+
+---------------------------------------------------------------------
+10. BUILD PLAN (1–2 weeks)
+---------------------------------------------------------------------
+  Day 1-2  repo skeleton, uv workspace, pre-commit, Makefile
+  Day 3-4  Django: users + JWT + core app + OpenAPI + Celery
+  Day 5    FastAPI serving with dummy sklearn model loaded from MLflow
+  Day 6-7  React shell: login, layout, protected routes, API client
+  Day 8    docker-compose full stack + healthchecks
+  Day 9    GitHub Actions ci.yml + cd.yml
+  Day 10   ml-train.yml with dummy model + champion/challenger logic
+  Day 11   Prometheus + Grafana provisioning
+  Day 12   copier template variables + docs
+  Deliverable: `copier copy gh:<you>/ai-product-template my-project`
+  produces a running app with login + dummy prediction page.
+
+RESUME LINE
+  "Built a reusable production template (Django, FastAPI, React, Docker,
+   GitHub Actions, MLflow, Prometheus) used to bootstrap 8 AI products
+   with automated train-evaluate-promote pipelines."

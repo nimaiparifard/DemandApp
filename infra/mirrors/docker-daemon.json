@@ -1,0 +1,6 @@
+{
+  "registry-mirrors": [
+    "https://docker.arvancloud.ir"
+  ],
+  "insecure-registries": ["harbor.demandops.local", "k3d-demandops-registry.localhost:5111"]
+}

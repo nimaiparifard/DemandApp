@@ -1,0 +1,3 @@
+# CloudNativePG operator (the database itself is infra/k8s-addons/postgres/cluster.yaml)
+resources:
+  requests: { cpu: 50m, memory: 128Mi }

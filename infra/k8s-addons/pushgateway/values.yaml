@@ -1,0 +1,6 @@
+serviceMonitor:
+  enabled: true
+  namespace: monitoring
+  additionalLabels: { release: kube-prometheus-stack }
+resources:
+  requests: { cpu: 20m, memory: 32Mi }

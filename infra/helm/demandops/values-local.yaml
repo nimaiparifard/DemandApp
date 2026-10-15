@@ -1,0 +1,15 @@
+# k3d on a laptop: 100-series sample, small replicas, plain HTTP, local registry.
+image:
+  registry: k3d-registry.localhost:5111/demandops
+  pullPolicy: Always
+serving:
+  replicas: 1
+  hpa: { enabled: false }
+  canary: { pauseSeconds: 20 }
+  ingress: { host: forecast.localhost, tls: false }
+streamlit:
+  host: app.localhost
+env:
+  DEMANDOPS_N_SERIES: "100"
+simulator:
+  schedule: "*/2 * * * *"

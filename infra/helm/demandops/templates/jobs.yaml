@@ -1,0 +1,70 @@
+{{- if .Values.simulator.enabled }}
+# Data simulator: replays one new day of M5 sales into the landing bucket every N minutes.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: demandops-simulator
+  labels: {{- include "demandops.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.simulator.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+          containers:
+            - name: simulator
+              image: {{ include "demandops.image" (list . .Values.image.jobs) }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              args: ["simulate", "--days", "1", "--shift", {{ .Values.simulator.demandShift | quote }}]
+              env: {{- include "demandops.env" . | nindent 16 }}
+              volumeMounts: [{ name: data, mountPath: /data, readOnly: true }]
+              resources:
+                requests: { cpu: 100m, memory: 1Gi }
+                limits: { memory: 3Gi }
+          volumes:
+            - name: data
+              persistentVolumeClaim: { claimName: {{ .Values.dataVolume.claimName }} }
+{{- end }}
+{{- if .Values.feast.applyJob }}
+---
+# Registers the Feast entity/feature view in the registry on every sync (idempotent).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: demandops-feast-apply
+  labels: {{- include "demandops.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: feast-apply
+          image: {{ include "demandops.image" (list . .Values.image.jobs) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c", "cd /app/feature_repo && feast apply"]
+          env: {{- include "demandops.env" . | nindent 12 }}
+{{- end }}
+{{- if .Values.dataVolume.create }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.dataVolume.claimName }}
+  labels: {{- include "demandops.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: {{ .Values.dataVolume.size }} }
+{{- end }}
