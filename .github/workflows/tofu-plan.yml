@@ -29,6 +29,6 @@ jobs:
           tofu plan -input=false -no-color | tee plan.txt
       - name: Comment the plan on the PR
         if: ${{ secrets.ARVAN_API_KEY != '' }}
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@v3
         with:
           path: infra/tofu/envs/vps/plan.txt
